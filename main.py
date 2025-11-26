@@ -1,30 +1,40 @@
 import streamlit as st
-import requests
-import io
+from huggingface_hub import InferenceClient
 from PIL import Image
+import io
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Terupt Comic Creator", page_icon="❄️", layout="wide")
+st.set_page_config(page_title="Mr. Terupt Comic Creator", page_icon="❄️", layout="wide")
 
-# --- 2. STYLING ---
+# --- 2. COMIC STYLING ---
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Comic+Neue:wght@700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Bangers&family=Roboto&display=swap');
     
     .stApp {
-        background-color: #f0f2f6;
+        background-color: #f4f4f4;
     }
     
     h1 {
-        font-family: 'Comic Neue', cursive;
+        font-family: 'Bangers', cursive;
         color: #2c3e50;
         text-align: center;
-        font-size: 60px;
+        font-size: 70px;
+        letter-spacing: 2px;
+        text-shadow: 3px 3px #3498db;
+    }
+    
+    .chapter-box {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        border: 2px solid #2c3e50;
+        box-shadow: 5px 5px 0px #2c3e50;
     }
     
     .stImage img {
-        border: 5px solid black;
-        box-shadow: 10px 10px 0px #888888;
+        border: 4px solid black;
+        box-shadow: 8px 8px 0px black;
         transition: transform 0.2s;
     }
     .stImage img:hover {
@@ -33,118 +43,111 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("❄️ The Terupt Visualizer")
-st.markdown("### Turn a chapter into a comic page instantly!")
+st.title("❄️ BECAUSE OF MR. TERUPT")
+st.markdown("<h3 style='text-align: center; font-family: Roboto;'>The Graphic Novel Generator</h3>", unsafe_allow_html=True)
 
-# --- 3. SIDEBAR & AUTH ---
+# --- 3. AUTH ---
 if "HF_TOKEN" in st.secrets:
     api_key = st.secrets["HF_TOKEN"]
 else:
     api_key = st.sidebar.text_input("Enter Hugging Face Token", type="password")
 
-# --- 4. AI FUNCTIONS ---
-def get_story_panels(scene_description, character):
-    """Uses Llama 3 to split a scene into 3 image prompts"""
-    API_URL = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct"
-    headers = {"Authorization": f"Bearer {api_key}"}
+# --- 4. THE BOOK KNOWLEDGE BASE ---
+# We map specific chapters to visual descriptions so the AI gets it right every time.
+BOOK_SCENES = {
+    "Select a Chapter...": "",
     
-    # The Prompt Engineering
-    prompt = f"""
-    [INST] You are a comic book writer adapting the book 'Because of Mr. Terupt'.
+    "September: The Dollar Word Challenge": {
+        "character": "Luke (The Brain)",
+        "summary": "Mr. Terupt challenges the class to find words where the letters add up to exactly 100 dollars. Luke calculates furiously on the board.",
+        "panels": [
+            "Luke standing at a chalkboard covered in math equations and alphabet numbers, looking intense.",
+            "Mr. Terupt smiling and holding a dollar bill, challenging the class.",
+            "Luke holding up a piece of paper with the word 'EXCELLENT' written on it, looking proud."
+        ]
+    },
     
-    The user wants to visualize this scene: "{scene_description}".
-    The perspective is from the character: {character}.
+    "November: The Plant Experiment": {
+        "character": "Jessica (The New Girl)",
+        "summary": "The class is growing bean plants. Some are fed special concoctions. Jessica is caring gently for her plant.",
+        "panels": [
+            "Close up of bean plants growing in cups on a classroom windowsill.",
+            "Jessica carefully watering a plant with a dropper, looking caring.",
+            "A split screen showing a healthy plant vs a dead plant, science experiment style."
+        ]
+    },
     
-    Create 3 distinct, visual descriptions for 3 comic book panels that tell this story sequentially.
-    Keep descriptions physical and visual (what do we see?).
+    "February: The Snowball Incident": {
+        "character": "Peter (The Class Clown)",
+        "summary": "The class has a reward day in the snow. Peter rolls a snowball. He throws it and accidentally hits Mr. Terupt, who falls.",
+        "panels": [
+            "A snowy playground, Peter rolling a large snowball, looking mischievous.",
+            "Peter throwing the snowball through the air, time frozen, looking shocked.",
+            "Mr. Terupt falling into the snow, glasses flying off, dramatic angle."
+        ]
+    },
     
-    Format output EXACTLY like this:
-    PANEL 1: [Description]
-    PANEL 2: [Description]
-    PANEL 3: [Description]
-    [/INST]
-    """
+    "March: The Hospital Waiting Room": {
+        "character": "Alexia (The Queen Bee)",
+        "summary": "The students are sitting in the hospital hallway waiting for news about Mr. Terupt. They are sad and bonding.",
+        "panels": [
+            "A sterile hospital hallway, students sitting on chairs looking sad.",
+            "Alexia and Jessica holding hands or sitting close, looking supportive.",
+            "A view of a closed hospital door with a 'Do Not Enter' sign."
+        ]
+    },
     
-    try:
-        response = requests.post(API_URL, headers=headers, json={"inputs": prompt})
-        return response.json()[0]['generated_text']
-    except:
-        # Fallback if AI fails (Mock data)
-        return f"PANEL 1: {character} looks worried.\nPANEL 2: The scene happens: {scene_description}.\nPANEL 3: The aftermath."
+    "June: The Last Day": {
+        "character": "Mr. Terupt",
+        "summary": "Mr. Terupt returns to the classroom on the last day of school. The kids are cheering.",
+        "panels": [
+            "The classroom door opening, revealing Mr. Terupt standing there.",
+            "The entire class cheering and clapping, streamers in the air.",
+            "A close up of Mr. Terupt smiling with a tear in his eye."
+        ]
+    }
+}
 
-def generate_image(prompt_text):
-    """Uses Stable Diffusion to draw the panel"""
-    # We use the reliable v1-5 model
-    API_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
-    headers = {"Authorization": f"Bearer {api_key}"}
+# --- 5. AI GENERATION FUNCTION (DIRECT MODE) ---
+def generate_panel(prompt_text):
+    client = InferenceClient(model="runwayml/stable-diffusion-v1-5", token=api_key)
     
-    # Add art style magic words
-    final_prompt = f"comic book art, graphic novel style, {prompt_text}, detailed, vibrant colors, school setting"
+    # Comic Book Magic Words
+    style = "comic book art, graphic novel style, thick ink lines, vibrant colors, detailed, cel shaded"
+    full_prompt = f"{style}, {prompt_text}"
     
     try:
-        response = requests.post(API_URL, headers=headers, json={"inputs": final_prompt})
-        if response.status_code == 200:
-            return Image.open(io.BytesIO(response.content))
-        else:
-            return None
-    except:
+        # We use the text_to_image function (safe and reliable)
+        image = client.text_to_image(full_prompt)
+        return image
+    except Exception as e:
         return None
 
-# --- 5. USER INPUTS ---
-col1, col2 = st.columns([1, 2])
+# --- 6. USER INTERFACE ---
+selected_chapter = st.selectbox("📖 Choose a Chapter/Event:", list(BOOK_SCENES.keys()))
 
-with col1:
-    character = st.selectbox("Who is narrating?", 
-        ["Peter (The Class Clown)", "Jessica (The New Girl)", "Luke (The Brain)", 
-         "Alexia (The Queen Bee)", "Jeffrey (The Slacker)", "Danielle (The Pushover)", "Anna (The Shy One)"]
-    )
+if selected_chapter != "Select a Chapter..." and api_key:
+    scene_data = BOOK_SCENES[selected_chapter]
     
-    chapter_idea = st.text_area("Describe the Scene/Chapter:", 
-        placeholder="Example: The class goes outside for the reward day and Peter creates a snowball..."
-    )
+    # Display Scene Info
+    st.info(f"**Narrator:** {scene_data['character']}")
+    st.write(f"**Context:** {scene_data['summary']}")
     
-    generate_btn = st.button("🎨 Draw Comic Page")
-
-# --- 6. MAIN GENERATION LOOP ---
-if generate_btn and api_key:
-    if not chapter_idea:
-        st.warning("Please describe a scene first!")
-    else:
-        # Step 1: Write the Script
-        with st.spinner("✍️ Writing the script (Asking Llama 3)..."):
-            script_raw = get_story_panels(chapter_idea, character)
-            
-            # Simple parsing to find the panels (This assumes the AI follows instructions, which Llama 3 usually does)
-            # If parsing fails, we just use the user input as the base
-            p1_text = f"{character} in a school setting, {chapter_idea}, beginning of scene"
-            p2_text = f"Action shot, {chapter_idea}, middle of scene"
-            p3_text = f"Dramatic reaction, {chapter_idea}, end of scene"
-            
-            # Try to extract real panels from AI response
-            if "PANEL 1:" in script_raw:
-                parts = script_raw.split("PANEL")
-                if len(parts) >= 4:
-                    p1_text = parts[1].replace("1:", "").strip()
-                    p2_text = parts[2].replace("2:", "").strip()
-                    p3_text = parts[3].replace("3:", "").strip()
-
-        # Step 2: Draw the Panels
-        st.success("Script Generated! Now drawing...")
+    if st.button("🎨 GENERATE COMIC PAGE"):
         
-        panel_cols = st.columns(3)
-        prompts = [p1_text, p2_text, p3_text]
+        col1, col2, col3 = st.columns(3)
+        columns = [col1, col2, col3]
         
-        for i, col in enumerate(panel_cols):
-            with col:
-                st.info(f"Panel {i+1}")
-                st.caption(f"Prompt: {prompts[i][:100]}...") # Show a preview of the text
-                
+        for i, panel_desc in enumerate(scene_data['panels']):
+            with columns[i]:
+                st.markdown(f"**Panel {i+1}**")
                 with st.spinner("Drawing..."):
-                    img = generate_image(prompts[i])
+                    img = generate_panel(panel_desc)
                     if img:
                         st.image(img, use_column_width=True)
+                        st.caption(panel_desc)
                     else:
-                        st.error("Image Gen Failed (Server Busy)")
+                        st.error("Server Busy (Try Again)")
 
-elif generate_btn and not api_key:
-    st.error("🔒 Please enter your Token in the sidebar!")
+elif not api_key:
+    st.warning("Please enter your Token in the sidebar.")
